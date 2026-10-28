@@ -47,13 +47,13 @@ def sample() -> pd.DataFrame:
 def sql_row(tlm, truck, o, d, sdep, sarr, adep, aarr, i="10/16/2026 3:00:00 AM", m=None, order="10/15/2026 2:00:00 PM",
             dep_color="GREEN", arr_color="GREEN"):
     sd = pd.Timestamp(sdep)
-    f = lambda x: "" if not x else pd.Timestamp(x).strftime("%-m/%-d/%Y %-I:%M:%S %p")  # noqa: E731
+    f = lambda x: "" if not x else pd.Timestamp(x).strftime("%m/%d/%Y %I:%M:%S %p")  # noqa: E731
     v = {"AC Type": "DRYD", "Actual Arrival Color": arr_color, "Actual Arrival Date": f(aarr),
          "Actual Dep Color": dep_color, "Actual Departure Date": f(adep), "crtarpcod": o, "Destination": d,
          "fltcaridr": "1001", "I": i, "M": m or i, "Origin": o, "Schedule Departure Date/Time": f(sdep),
-         "Scheduled Arrival Date": f(sarr), "Scheduled Departure Date": f"{sd:%-m/%-d/%Y}",
-         "Scheduled Departure Date (Exclude Nulls)": f"{sd:%-m/%-d/%Y}",
-         "Scheduled Departure Time": f"12/30/1899 {sd:%-I:%M:%S %p}", "TLM": tlm, "trkorddat": order,
+         "Scheduled Arrival Date": f(sarr), "Scheduled Departure Date": f"{sd:%m/%d/%Y}",
+         "Scheduled Departure Date (Exclude Nulls)": f"{sd:%m/%d/%Y}",
+         "Scheduled Departure Time": f"12/30/1899 {sd:%I:%M:%S %p}", "TLM": tlm, "trkorddat": order,
          "Truck": str(truck), "Vendor Code": "77848", "Vendor Name": "VENDOR A", "FLIGHT_LEG_SEQ_NBR": "1",
          "fltseqnum": "451", "ITIN_FLIGHT_LEG_SEQ_NBR": "451", "MKT_FLIGHT_NBR": str(truck), "Placeholder": "0"}
     return [v[c] for c in SQL_COLS]
@@ -148,17 +148,59 @@ class LateTrucksTests(unittest.TestCase):
         self.assertTrue((self.tmp / "out" / "late_trucks_feed.js").exists())
         import openpyxl
         wb = openpyxl.load_workbook(res["xlsx"])
-        self.assertEqual(wb.sheetnames, ["Action List", "Trucks Report", "Late - Report Card", "Summary",
-                                         "Data Quality", "About"])
-        ws = wb["Trucks Report"]
-        status = {ws.cell(r, 10).value: ws.cell(r, 13) for r in range(5, ws.max_row + 1)}
-        self.assertEqual(status["T2"].value, "Late")
-        self.assertTrue(status["T2"].font.color.rgb.endswith("E15759"))
-        self.assertTrue(status["T1"].font.color.rgb.endswith("59A14F"))
-        rc = wb["Late - Report Card"]
+        self.assertEqual(wb.sheetnames, ["Dashboard", "Worklist", "Report Card", "Summary", "Trends", "Data", "Lanes",
+                                         "Vendors", "Stations", "Settings", "About"])
+        ws = wb["Data"]
+        hdr = {c.value: c.column for c in ws[3]}
+        self.assertTrue(str(ws.cell(4, hdr["Dep Status"]).value).startswith("=IF(Data[[#This Row],[ATD]]"))
+        cached = openpyxl.load_workbook(res["xlsx"], data_only=True)["Data"]
+        status = {cached.cell(r, hdr["TLM"]).value: cached.cell(r, hdr["Dep Status"]).value
+                  for r in range(4, ws.max_row + 1)}
+        self.assertEqual(status["T2"], "Late")
+        self.assertEqual(status["T1"], "On time")
+        rc = wb["Report Card"]
         self.assertEqual([c.value for c in rc[4]][:23], L.RC_COLUMNS)
-        trucks = {rc.cell(r, 5).value for r in range(5, rc.max_row + 1)}
-        self.assertEqual(trucks, {7002, 7004})
+        rcc = openpyxl.load_workbook(res["xlsx"], data_only=True)["Report Card"]
+        trucks = {str(rcc.cell(r, 5).value) for r in range(5, rc.max_row + 1)}
+        self.assertEqual(trucks, {"7002", "7003", "7004", "7005"})
+        s = openpyxl.load_workbook(res["xlsx"], data_only=True)["Summary"]
+        self.assertEqual(s["B6"].value, 5)                                  # trucks in window
+        self.assertTrue(str(wb["Summary"]["B6"].value).startswith("=COUNTIFS("))
+
+    def test_worklist_and_carry_forward(self):
+        import openpyxl
+        res = self.run_build()
+        wl = openpyxl.load_workbook(res["xlsx"])
+        ws = wl["Worklist"]
+        hdr = {c.value: c.column for c in ws[4]}
+        tlms = [ws.cell(r, hdr["TLM"]).value for r in range(5, ws.max_row + 1)]
+        self.assertEqual(set(tlms), {"T2", "T3", "T4"})                       # late, check date, no ATD
+        cached = openpyxl.load_workbook(res["xlsx"], data_only=True)["Worklist"]
+        issue = {cached.cell(r, hdr["TLM"]).value: cached.cell(r, hdr["Issue"]).value for r in range(5, ws.max_row + 1)}
+        self.assertEqual(issue["T4"], "No ATD - possible no-show")
+        self.assertEqual(cached.cell(5, hdr["TLM"]).value, "T4")             # priority 1 first
+        r = tlms.index("T2") + 5
+        ws.cell(r, hdr["Status"]).value = "Emailed vendor"
+        ws.cell(r, hdr["Delay Reason"]).value = "MECH"
+        ws.cell(r, hdr["Notes"]).value = "flat tire"
+        v = wl["Vendors"]
+        v.cell(5, 3).value = "dispatch@acme.example"                          # vendor email typed once
+        wl.save(res["xlsx"])
+        res2 = self.run_build(as_of="2026-10-18 09:00")
+        self.assertEqual(res2["notes"]["T2"]["Notes"], "flat tire")
+        c2 = openpyxl.load_workbook(res2["xlsx"], data_only=True)
+        w2 = c2["Worklist"]
+        row = {w2.cell(r, hdr["TLM"]).value: r for r in range(5, w2.max_row + 1)}["T2"]
+        self.assertEqual(w2.cell(row, hdr["Status"]).value, "Emailed vendor")
+        self.assertEqual(w2.cell(row, hdr["Fault"]).value, "VN")
+        rc = c2["Report Card"]
+        rc_row = [r for r in range(5, rc.max_row + 1) if rc.cell(r, 25).value == "T2"][0]
+        self.assertEqual(rc.cell(rc_row, 19).value, "MECH")                    # Reason linked from the Worklist
+        self.assertEqual(rc.cell(rc_row, 21).value, "flat tire")              # Summary <- Notes
+        self.assertEqual(c2["Vendors"].cell(5, 3).value, "dispatch@acme.example")
+        self.assertEqual(w2.cell(row, hdr["Email vendor"]).value, "Email vendor")
+        f2 = openpyxl.load_workbook(res2["xlsx"])["Worklist"].cell(row, hdr["Email vendor"]).value
+        self.assertIn("mailto:", f2)
 
     def test_filters(self):
         self.assertEqual(len(self.run_build(origin="ORD")["df"]), 2)
@@ -173,7 +215,7 @@ class LateTrucksTests(unittest.TestCase):
 
     def test_team_schedule_basis(self):
         df = L.score(L.prepare(L.collapse(L.map_columns(L.read_any(self.csv))), datetime(2026, 10, 18, 8)), 59)
-        sched = {(7001, "JFK", "BOS"): (480, 12 * 60)}          # team ETA 12:00 vs system 14:00
+        sched = {("7001", "JFK", "BOS"): (480, 12 * 60)}          # team ETA 12:00 vs system 14:00
         out = L.apply_team_schedule(df, sched, "team", 59).set_index("tlm")
         self.assertEqual(out.loc["T1", "arr_status"], "Late")    # 14:30 vs 12:00
         self.assertEqual(out.loc["T2", "arr_status"], "Late")    # not on schedule -> system basis kept

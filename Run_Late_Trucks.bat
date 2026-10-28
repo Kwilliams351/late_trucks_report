@@ -1,7 +1,8 @@
 @echo off
 rem Drag the Tableau export CSV (custom SQL data source, "Download > Data", or SQL result) onto this file.
-rem Builds Output\Trucks Report <date>.xlsx (last 7 days, Action List first) + late_trucks_feed.json/.js,
-rem and adds every truck in the file to History\late_trucks_history.csv for other reporting.
+rem Builds Output\Trucks Report <date>.xlsx (formula-linked: Dashboard, Worklist, Report Card, Data ...)
+rem + late_trucks_feed.json/.js, and adds every truck to History\ (history CSV + Trucks History Summary.xlsx).
+rem Save the previous Trucks Report first so your Worklist entries carry forward.
 rem Optional: add --arr-basis team below to score arrivals against the Report Card Schedule tab.
 rem HUB = folder holding Coordinator Hub.html; the feed is copied there so the Day-of board shows real late trucks.
 setlocal

@@ -1,4 +1,12 @@
 __pycache__/
-*.pyc
-Output/*.csv
+*.py[cod]
+Output/
+History/
+archive/
+snapshots/
+hub/late_trucks_feed.js
+*.csv
+*.xlsx
+*.zip
+*.tmp
 .DS_Store
